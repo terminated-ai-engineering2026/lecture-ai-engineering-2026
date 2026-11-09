@@ -8,6 +8,11 @@ import json
 from functools import cache
 from pathlib import Path
 
+import random
+
+
+
+
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MAX_RESULTS = 3
 
@@ -67,6 +72,27 @@ def search_glossary(query: str) -> str:
     )
 
 
+def make_quiz(lecture: int) -> str:
+    """指定された回の講義（第N回）の用語集からランダムに1つ選び、問題と答えを作成して返します。
+
+    Args:
+        lecture: 対象の講義回（例: 2）
+    """
+    glossary = load_glossary()
+    target_terms = [item for item in glossary if item.get("lecture") == lecture]
+    
+    if not target_terms:
+        return f"指定された第{lecture}回の用語は見つかりませんでした。"
+    
+    selected = random.choice(target_terms)
+    term = selected.get("term")
+    definition = selected.get("definition")
+    
+    return f"【確認問題（第{lecture}回）】\n用語: {term}\n答え（解説）: {definition}"
+
+
+
+
 def get_lecture_summary(lecture: int) -> str:
     """指定した回（1始まりの整数）の講義の要点を返す。
 
@@ -77,3 +103,25 @@ def get_lecture_summary(lecture: int) -> str:
         available = sorted(p.stem for p in (DATA_DIR / "lectures").glob("*.md"))
         return f"第{lecture}回の要点はまだありません。用意されている回: {', '.join(available)}"
     return path.read_text(encoding="utf-8")
+
+
+
+
+def save_learning_log(content: str) -> str:
+    """学習の記録を learning_log/ フォルダの下にテキストファイルとして保存します。
+
+    Args:
+        content: 保存する学習の記録内容
+    """
+    log_dir = Path("learning_log")
+    log_dir.mkdir(exist_ok=True)
+    
+    # タイムスタンプ等をファイル名や内容に含めるか、シンプルな連番・テキスト名にする
+    # ここでは例としてファイル名を固定あるいは簡易的に生成します
+    file_path = log_dir / "log.txt"
+    
+    # 既存の内容に追記する形にする場合
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write(content + "\n---\n")
+        
+    return f"学習の記録を {file_path} に保存しました。"

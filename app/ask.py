@@ -17,6 +17,9 @@ from google.genai import errors
 
 from app.config import MODEL, api_error_message, get_api_key
 
+
+from pydantic_ai import DeferredToolRequests
+
 # 講座に固有の質問。正しい答えは data/glossary.json の homework-levels にある
 DEFAULT_QUESTION = "AIE2026の講座の宿題にある「3レベル」とは何ですか？"
 
@@ -47,3 +50,21 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+result = agent.run(prompt)
+
+# DeferredToolRequests（承認待ち）が発生した場合のハンドリング
+if isinstance(result.data, DeferredToolRequests):
+    print("\n[確認] 学習の記録を保存してもよろしいですか？ (y/n): ", end="")
+    choice = input().strip().lower()
+    if choice == "y":
+        # 承認して処理を続行（resume）する
+        result = result.data.resume()
+        print(result.data)
+    else:
+        print("保存をキャンセルしました。")
+else:
+    print(result.data)
