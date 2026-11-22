@@ -137,52 +137,62 @@ def search(query: str) -> list[dict]:
         """, (sqlite_vec.serialize_float32(vector), RAG_TOP_K))
         return [dict(row) for row in rows]
 
+def search(query: str) -> list[dict]:
+    """質問を埋め込み、近いページと前後1ページを重複なく返す。"""
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("検索語が空です。")
 
-def search_graph(query: str) -> dict:
-    """ベクトル検索を入口に、前後ページと共通用語で候補を広げる。"""
-    pages = {page["page_id"]: page for page in load_pages(RAG_SOURCE)}
-    graph = json.loads(RAG_GRAPH.read_text(encoding="utf-8"))
-    nodes = {node["id"]: node for node in graph["nodes"]
-             if node["kind"] == "term" or node["id"] in pages}
-    adjacent = defaultdict(set)
-    for edge in graph["edges"]:
-        a, b = edge["source"], edge["target"]
-        if edge["relation"] in ("next_page", "mentions") and a in nodes and b in nodes:
-            adjacent[a].add(b)
-            adjacent[b].add(a)
+    with open_index(RAG_DB) as db:
+        vector = embed_text(query.strip(), "RETRIEVAL_QUERY")
+        rows = db.execute("""
+            SELECT page_id, document_id, lecture, document_title, section, title, page, content,
+                   vec_distance_cosine(embedding, ?) AS distance
+            FROM chunks ORDER BY distance, page_id LIMIT ?
+        """, (sqlite_vec.serialize_float32(vector), RAG_TOP_K))
+        hits = [dict(row) for row in rows]
 
-    seeds = [hit for hit in search(query) if hit["page_id"] in pages][:min(GRAPH_START_K, GRAPH_MAX_RESULTS)]
-    seed_ids = {seed["page_id"] for seed in seeds}
-    results, candidates = [], {}
-    for rank, seed in enumerate(seeds):
-        root = seed["page_id"]
-        results.append({**pages[root], "distance": seed["distance"], "hops": 0,
-                        "path": [{"id": root, "title": pages[root]["title"]}]})
-        queue = deque([(root, [root])])
-        visited = {root}
-        while queue:
-            current, path = queue.popleft()
-            if len(path) - 1 >= GRAPH_HOPS:
+    pages_by_doc_and_page = {
+        (page["document_id"], page["page"]): page
+        for page in load_pages(RAG_SOURCE)
+    }
+
+    expanded_results: list[dict] = []
+    seen_page_ids: set[str] = set()
+
+    for hit in hits:
+        doc_id = hit["document_id"]
+        page_num = hit["page"]
+        candidates = [
+            (doc_id, page_num - 1, "prev"),
+            (doc_id, page_num, None),
+            (doc_id, page_num + 1, "next"),
+        ]
+
+        for target_doc_id, target_page_num, neighbor_kind in candidates:
+            page_info = pages_by_doc_and_page.get((target_doc_id, target_page_num))
+            if page_info is None:
                 continue
-            # 同じ深さなら、接続先が少ない用語からたどる。
-            neighbors = sorted(adjacent[current], key=lambda n: (len(adjacent[n]), n))
-            for neighbor in neighbors:
-                if neighbor in visited:
-                    continue
-                visited.add(neighbor)
-                route = path + [neighbor]
-                queue.append((neighbor, route))
-                if neighbor not in pages or neighbor in seed_ids:
-                    continue
-                frequency = max((len(adjacent[n]) for n in route if nodes[n]["kind"] == "term"), default=0)
-                priority = (len(route) - 1, frequency, rank, neighbor)
-                candidate = {**pages[neighbor], "hops": len(route) - 1,
-                             "path": [{"id": n, "title": nodes[n]["title"]} for n in route]}
-                if neighbor not in candidates or priority < candidates[neighbor][0]:
-                    candidates[neighbor] = (priority, candidate)
-    expanded = [candidate for _, candidate in sorted(candidates.values())]
-    return {"seeds": results, "expanded": expanded[:max(0, GRAPH_MAX_RESULTS - len(results))],
-            "max_hops": GRAPH_HOPS}
+
+            pid = page_info["page_id"]
+            if pid in seen_page_ids:
+                continue
+            seen_page_ids.add(pid)
+
+            if neighbor_kind is None:
+                expanded_results.append({
+                    **hit,
+                    "is_neighbor": False,
+                    "neighbor_kind": None,
+                })
+            else:
+                expanded_results.append({
+                    **page_info,
+                    "distance": None,
+                    "is_neighbor": True,
+                    "neighbor_kind": neighbor_kind,
+                })
+
+    return expanded_results
 
 
 
